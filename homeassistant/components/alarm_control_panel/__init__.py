@@ -9,7 +9,6 @@ import os
 
 import voluptuous as vol
 
-from homeassistant.components import verisure
 from homeassistant.const import (
     ATTR_CODE, ATTR_CODE_FORMAT, ATTR_ENTITY_ID, SERVICE_ALARM_TRIGGER,
     SERVICE_ALARM_DISARM, SERVICE_ALARM_ARM_HOME, SERVICE_ALARM_ARM_AWAY)
@@ -21,13 +20,9 @@ from homeassistant.helpers.entity_component import EntityComponent
 
 DOMAIN = 'alarm_control_panel'
 SCAN_INTERVAL = 30
+ATTR_CHANGED_BY = 'changed_by'
 
 ENTITY_ID_FORMAT = DOMAIN + '.{}'
-
-# Maps discovered services to their platforms
-DISCOVERY_PLATFORMS = {
-    verisure.DISCOVER_ALARMS: 'verisure'
-}
 
 SERVICE_TO_METHOD = {
     SERVICE_ALARM_DISARM: 'alarm_disarm',
@@ -50,8 +45,7 @@ ALARM_SERVICE_SCHEMA = vol.Schema({
 def setup(hass, config):
     """Track states and offer events for sensors."""
     component = EntityComponent(
-        logging.getLogger(__name__), DOMAIN, hass, SCAN_INTERVAL,
-        DISCOVERY_PLATFORMS)
+        logging.getLogger(__name__), DOMAIN, hass, SCAN_INTERVAL)
 
     component.setup(config)
 
@@ -65,8 +59,12 @@ def setup(hass, config):
 
         for alarm in target_alarms:
             getattr(alarm, method)(code)
-            if alarm.should_poll:
-                alarm.update_ha_state(True)
+
+        for alarm in target_alarms:
+            if not alarm.should_poll:
+                continue
+
+            alarm.update_ha_state(True)
 
     descriptions = load_yaml_config_file(
         os.path.join(os.path.dirname(__file__), 'services.yaml'))
@@ -131,6 +129,11 @@ class AlarmControlPanel(Entity):
         """Regex for code format or None if no code is required."""
         return None
 
+    @property
+    def changed_by(self):
+        """Last change triggered by."""
+        return None
+
     def alarm_disarm(self, code=None):
         """Send disarm command."""
         raise NotImplementedError()
@@ -152,5 +155,6 @@ class AlarmControlPanel(Entity):
         """Return the state attributes."""
         state_attr = {
             ATTR_CODE_FORMAT: self.code_format,
+            ATTR_CHANGED_BY: self.changed_by
         }
         return state_attr

@@ -7,28 +7,75 @@ import platform
 import subprocess
 import sys
 import threading
-import time
+
+from typing import Optional, List
 
 from homeassistant.const import (
     __version__,
     EVENT_HOMEASSISTANT_START,
     REQUIRED_PYTHON_VER,
+    REQUIRED_PYTHON_VER_WIN,
     RESTART_EXIT_CODE,
 )
+from homeassistant.util.async import run_callback_threadsafe
 
 
-def validate_python():
+def monkey_patch_asyncio():
+    """Replace weakref.WeakSet to address Python 3 bug.
+
+    Under heavy threading operations that schedule calls into
+    the asyncio event loop, Task objects are created. Due to
+    a bug in Python, GC may have an issue when switching between
+    the threads and objects with __del__ (which various components
+    in HASS have).
+
+    This monkey-patch removes the weakref.Weakset, and replaces it
+    with an object that ignores the only call utilizing it (the
+    Task.__init__ which calls _all_tasks.add(self)). It also removes
+    the __del__ which could trigger the future objects __del__ at
+    unpredictable times.
+
+    The side-effect of this manipulation of the Task is that
+    Task.all_tasks() is no longer accurate, and there will be no
+    warning emitted if a Task is GC'd while in use.
+
+    On Python 3.6, after the bug is fixed, this monkey-patch can be
+    disabled.
+
+    See https://bugs.python.org/issue26617 for details of the Python
+    bug.
+    """
+    # pylint: disable=no-self-use, protected-access, bare-except
+    import asyncio.tasks
+
+    class IgnoreCalls:
+        """Ignore add calls."""
+
+        def add(self, other):
+            """No-op add."""
+            return
+
+    asyncio.tasks.Task._all_tasks = IgnoreCalls()
+    try:
+        del asyncio.tasks.Task.__del__
+    except:
+        pass
+
+
+def validate_python() -> None:
     """Validate we're running the right Python version."""
-    major, minor = sys.version_info[:2]
-    req_major, req_minor = REQUIRED_PYTHON_VER
-
-    if major < req_major or (major == req_major and minor < req_minor):
-        print("Home Assistant requires at least Python {}.{}".format(
-            req_major, req_minor))
+    if sys.platform == "win32" and \
+       sys.version_info[:3] < REQUIRED_PYTHON_VER_WIN:
+        print("Home Assistant requires at least Python {}.{}.{}".format(
+            *REQUIRED_PYTHON_VER_WIN))
+        sys.exit(1)
+    elif sys.version_info[:3] < REQUIRED_PYTHON_VER:
+        print("Home Assistant requires at least Python {}.{}.{}".format(
+            *REQUIRED_PYTHON_VER))
         sys.exit(1)
 
 
-def ensure_config_path(config_dir):
+def ensure_config_path(config_dir: str) -> None:
     """Validate the configuration directory."""
     import homeassistant.config as config_util
     lib_dir = os.path.join(config_dir, 'deps')
@@ -57,7 +104,7 @@ def ensure_config_path(config_dir):
             sys.exit(1)
 
 
-def ensure_config_file(config_dir):
+def ensure_config_file(config_dir: str) -> str:
     """Ensure configuration file exists."""
     import homeassistant.config as config_util
     config_path = config_util.ensure_config_exists(config_dir)
@@ -69,7 +116,7 @@ def ensure_config_file(config_dir):
     return config_path
 
 
-def get_arguments():
+def get_arguments() -> argparse.Namespace:
     """Get parsed passed in arguments."""
     import homeassistant.config as config_util
     parser = argparse.ArgumentParser(
@@ -111,21 +158,13 @@ def get_arguments():
         default=None,
         help='Enables daily log rotation and keeps up to the specified days')
     parser.add_argument(
-        '--install-osx',
-        action='store_true',
-        help='Installs as a service on OS X and loads on boot.')
-    parser.add_argument(
-        '--uninstall-osx',
-        action='store_true',
-        help='Uninstalls from OS X.')
-    parser.add_argument(
-        '--restart-osx',
-        action='store_true',
-        help='Restarts on OS X.')
-    parser.add_argument(
         '--runner',
         action='store_true',
         help='On restart exit with code {}'.format(RESTART_EXIT_CODE))
+    parser.add_argument(
+        '--script',
+        nargs=argparse.REMAINDER,
+        help='Run one of the embedded scripts')
     if os.name == "posix":
         parser.add_argument(
             '--daemon',
@@ -134,12 +173,12 @@ def get_arguments():
 
     arguments = parser.parse_args()
     if os.name != "posix" or arguments.debug or arguments.runner:
-        arguments.daemon = False
+        setattr(arguments, 'daemon', False)
 
     return arguments
 
 
-def daemonize():
+def daemonize() -> None:
     """Move current process to daemon process."""
     # Create first fork
     pid = os.fork()
@@ -164,7 +203,7 @@ def daemonize():
     os.dup2(outfd.fileno(), sys.stderr.fileno())
 
 
-def check_pid(pid_file):
+def check_pid(pid_file: str) -> None:
     """Check that HA is not already running."""
     # Check pid file
     try:
@@ -186,7 +225,7 @@ def check_pid(pid_file):
     sys.exit(1)
 
 
-def write_pid(pid_file):
+def write_pid(pid_file: str) -> None:
     """Create a PID File."""
     pid = os.getpid()
     try:
@@ -196,47 +235,7 @@ def write_pid(pid_file):
         sys.exit(1)
 
 
-def install_osx():
-    """Setup to run via launchd on OS X."""
-    with os.popen('which hass') as inp:
-        hass_path = inp.read().strip()
-
-    with os.popen('whoami') as inp:
-        user = inp.read().strip()
-
-    cwd = os.path.dirname(__file__)
-    template_path = os.path.join(cwd, 'startup', 'launchd.plist')
-
-    with open(template_path, 'r', encoding='utf-8') as inp:
-        plist = inp.read()
-
-    plist = plist.replace("$HASS_PATH$", hass_path)
-    plist = plist.replace("$USER$", user)
-
-    path = os.path.expanduser("~/Library/LaunchAgents/org.homeassistant.plist")
-
-    try:
-        with open(path, 'w', encoding='utf-8') as outp:
-            outp.write(plist)
-    except IOError as err:
-        print('Unable to write to ' + path, err)
-        return
-
-    os.popen('launchctl load -w -F ' + path)
-
-    print("Home Assistant has been installed. \
-        Open it here: http://localhost:8123")
-
-
-def uninstall_osx():
-    """Unload from launchd on OS X."""
-    path = os.path.expanduser("~/Library/LaunchAgents/org.homeassistant.plist")
-    os.popen('launchctl unload ' + path)
-
-    print("Home Assistant has been uninstalled.")
-
-
-def closefds_osx(min_fd, max_fd):
+def closefds_osx(min_fd: int, max_fd: int) -> None:
     """Make sure file descriptors get closed when we restart.
 
     We cannot call close on guarded fds, and we cannot easily test which fds
@@ -254,7 +253,7 @@ def closefds_osx(min_fd, max_fd):
             pass
 
 
-def cmdline():
+def cmdline() -> List[str]:
     """Collect path and arguments to re-execute the current hass instance."""
     if sys.argv[0].endswith('/__main__.py'):
         modulepath = os.path.dirname(sys.argv[0])
@@ -262,16 +261,17 @@ def cmdline():
     return [sys.executable] + [arg for arg in sys.argv if arg != '--daemon']
 
 
-def setup_and_run_hass(config_dir, args):
+def setup_and_run_hass(config_dir: str,
+                       args: argparse.Namespace) -> Optional[int]:
     """Setup HASS and run."""
     from homeassistant import bootstrap
 
     # Run a simple daemon runner process on Windows to handle restarts
     if os.name == 'nt' and '--runner' not in sys.argv:
-        args = cmdline() + ['--runner']
+        nt_args = cmdline() + ['--runner']
         while True:
             try:
-                subprocess.check_call(args)
+                subprocess.check_call(nt_args)
                 sys.exit(0)
             except subprocess.CalledProcessError as exc:
                 if exc.returncode != RESTART_EXIT_CODE:
@@ -293,7 +293,7 @@ def setup_and_run_hass(config_dir, args):
             log_rotate_days=args.log_rotate_days)
 
     if hass is None:
-        return
+        return None
 
     if args.open_ui:
         def open_browser(event):
@@ -302,15 +302,17 @@ def setup_and_run_hass(config_dir, args):
                 import webbrowser
                 webbrowser.open(hass.config.api.base_url)
 
-        hass.bus.listen_once(EVENT_HOMEASSISTANT_START, open_browser)
+        run_callback_threadsafe(
+            hass.loop,
+            hass.bus.async_listen_once,
+            EVENT_HOMEASSISTANT_START, open_browser
+        )
 
     hass.start()
-    exit_code = int(hass.block_till_stopped())
-
-    return exit_code
+    return hass.exit_code
 
 
-def try_to_restart():
+def try_to_restart() -> None:
     """Attempt to clean up state and start a new homeassistant instance."""
     # Things should be mostly shut down already at this point, now just try
     # to clean up things that may have been left behind.
@@ -320,7 +322,7 @@ def try_to_restart():
     # thread left (which is us). Nothing we really do with it, but it might be
     # useful when debugging shutdown/restart issues.
     try:
-        nthreads = sum(thread.isAlive() and not thread.isDaemon()
+        nthreads = sum(thread.is_alive() and not thread.daemon
                        for thread in threading.enumerate())
         if nthreads > 1:
             sys.stderr.write(
@@ -352,28 +354,20 @@ def try_to_restart():
     os.execv(args[0], args)
 
 
-def main():
+def main() -> int:
     """Start Home Assistant."""
+    monkey_patch_asyncio()
+
     validate_python()
 
     args = get_arguments()
 
+    if args.script is not None:
+        from homeassistant import scripts
+        return scripts.run(args.script)
+
     config_dir = os.path.join(os.getcwd(), args.config)
     ensure_config_path(config_dir)
-
-    # OS X launchd functions
-    if args.install_osx:
-        install_osx()
-        return 0
-    if args.uninstall_osx:
-        uninstall_osx()
-        return 0
-    if args.restart_osx:
-        uninstall_osx()
-        # A small delay is needed on some systems to let the unload finish.
-        time.sleep(0.5)
-        install_osx()
-        return 0
 
     # Daemon functions
     if args.pid_file:

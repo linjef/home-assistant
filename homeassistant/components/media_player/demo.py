@@ -8,7 +8,7 @@ from homeassistant.components.media_player import (
     MEDIA_TYPE_MUSIC, MEDIA_TYPE_TVSHOW, MEDIA_TYPE_VIDEO, SUPPORT_NEXT_TRACK,
     SUPPORT_PAUSE, SUPPORT_PLAY_MEDIA, SUPPORT_PREVIOUS_TRACK,
     SUPPORT_TURN_OFF, SUPPORT_TURN_ON, SUPPORT_VOLUME_MUTE, SUPPORT_VOLUME_SET,
-    SUPPORT_SELECT_SOURCE, MediaPlayerDevice)
+    SUPPORT_SELECT_SOURCE, SUPPORT_CLEAR_PLAYLIST, MediaPlayerDevice)
 from homeassistant.const import STATE_OFF, STATE_PAUSED, STATE_PLAYING
 
 
@@ -32,7 +32,7 @@ YOUTUBE_PLAYER_SUPPORT = \
 
 MUSIC_PLAYER_SUPPORT = \
     SUPPORT_PAUSE | SUPPORT_VOLUME_SET | SUPPORT_VOLUME_MUTE | \
-    SUPPORT_TURN_ON | SUPPORT_TURN_OFF
+    SUPPORT_TURN_ON | SUPPORT_TURN_OFF | SUPPORT_CLEAR_PLAYLIST
 
 NETFLIX_PLAYER_SUPPORT = \
     SUPPORT_PAUSE | SUPPORT_TURN_ON | SUPPORT_TURN_OFF | SUPPORT_SELECT_SOURCE
@@ -42,7 +42,7 @@ class AbstractDemoPlayer(MediaPlayerDevice):
     """A demo media players."""
 
     # We only implement the methods that we support
-    # pylint: disable=abstract-method
+
     def __init__(self, name):
         """Initialize the demo device."""
         self._name = name
@@ -110,7 +110,7 @@ class DemoYoutubePlayer(AbstractDemoPlayer):
     """A Demo media player that only supports YouTube."""
 
     # We only implement the methods that we support
-    # pylint: disable=abstract-method
+
     def __init__(self, name, youtube_id=None, media_title=None):
         """Initialize the demo device."""
         super().__init__(name)
@@ -162,7 +162,7 @@ class DemoMusicPlayer(AbstractDemoPlayer):
     """A Demo media player that only supports YouTube."""
 
     # We only implement the methods that we support
-    # pylint: disable=abstract-method
+
     tracks = [
         ('Technohead', 'I Wanna Be A Hippy (Flamman & Abraxas Radio Mix)'),
         ('Paul Elstak', 'Luv U More'),
@@ -214,12 +214,12 @@ class DemoMusicPlayer(AbstractDemoPlayer):
     @property
     def media_title(self):
         """Return the title of current playing media."""
-        return self.tracks[self._cur_track][1]
+        return self.tracks[self._cur_track][1] if len(self.tracks) > 0 else ""
 
     @property
     def media_artist(self):
         """Return the artist of current playing media (Music track only)."""
-        return self.tracks[self._cur_track][0]
+        return self.tracks[self._cur_track][0] if len(self.tracks) > 0 else ""
 
     @property
     def media_album_name(self):
@@ -257,12 +257,19 @@ class DemoMusicPlayer(AbstractDemoPlayer):
             self._cur_track += 1
             self.update_ha_state()
 
+    def clear_playlist(self):
+        """Clear players playlist."""
+        self.tracks = []
+        self._cur_track = 0
+        self._player_state = STATE_OFF
+        self.update_ha_state()
+
 
 class DemoTVShowPlayer(AbstractDemoPlayer):
     """A Demo media player that only supports YouTube."""
 
     # We only implement the methods that we support
-    # pylint: disable=abstract-method
+
     def __init__(self):
         """Initialize the demo device."""
         super().__init__('Lounge room')

@@ -6,7 +6,7 @@ import pkgutil
 import re
 import sys
 
-COMMENT_REQUIREMENTS = [
+COMMENT_REQUIREMENTS = (
     'RPi.GPIO',
     'rpi-rf',
     'Adafruit_Python_DHT',
@@ -14,7 +14,15 @@ COMMENT_REQUIREMENTS = [
     'pybluez',
     'bluepy',
     'python-lirc',
-]
+    'gattlib',
+    'pyuserinput',
+    'evdev',
+    'pycups',
+)
+
+IGNORE_PACKAGES = (
+    'homeassistant.components.recorder.models',
+)
 
 
 def explore_module(package, explore_children):
@@ -26,7 +34,7 @@ def explore_module(package, explore_children):
     if not hasattr(module, '__path__'):
         return found
 
-    for _, name, ispkg in pkgutil.iter_modules(module.__path__, package + '.'):
+    for _, name, _ in pkgutil.iter_modules(module.__path__, package + '.'):
         found.append(name)
 
         if explore_children:
@@ -55,11 +63,13 @@ def gather_modules():
     errors = []
     output = []
 
-    for package in sorted(explore_module('homeassistant.components', True)):
+    for package in sorted(explore_module('homeassistant.components', True) +
+                          explore_module('homeassistant.scripts', True)):
         try:
             module = importlib.import_module(package)
         except ImportError:
-            errors.append(package)
+            if package not in IGNORE_PACKAGES:
+                errors.append(package)
             continue
 
         if not getattr(module, 'REQUIREMENTS', None):
@@ -127,6 +137,7 @@ def main():
         sys.exit(1)
 
     write_file(data)
+
 
 if __name__ == '__main__':
     main()
